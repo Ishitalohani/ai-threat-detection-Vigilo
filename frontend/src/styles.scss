@@ -1,0 +1,16 @@
+@forward 'styles/tokens';
+@forward 'styles/fonts';
+@forward 'styles/mixins';
+@use 'styles/reset';
+@use 'styles/tokens' as *;
+@use 'styles/fonts' as *;
+
+:root { --danger: #{$severity-high}; --warning: #{$severity-medium}; --success: #{$severity-low}; --accent: #{$accent}; color-scheme: dark; }
+html { background:$bg-default; scroll-behavior:smooth; }
+body { min-width:320px; background:$bg-default; }
+button,input,select { font:inherit; }
+button { cursor:pointer; }
+::selection { background:rgba(76,144,255,.25); color:$white; }
+::-webkit-scrollbar { width:8px; height:8px; } ::-webkit-scrollbar-track { background:$bg-default; } ::-webkit-scrollbar-thumb { background:$border-strong; border-radius:999px; } ::-webkit-scrollbar-thumb:hover { background:$border-stronger; }
+#root { min-height:100vh; display:flex; flex-direction:column; background:$bg-default; }
+.app { flex:1; display:flex; flex-direction:column; color:$text-default; font-family:$font-sans; }

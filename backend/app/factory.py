@@ -1,5 +1,5 @@
-﻿"""
-Â©AngelaMos | 2026
+"""
+©AngelaMos | 2026
 factory.py
 
 FastAPI application factory with async lifespan managing
@@ -42,6 +42,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlmodel import SQLModel
 
@@ -129,14 +130,14 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         )
         tailer.start()
     else:
-        logger.warning("Log directory %s not found â€” tailer disabled", log_dir)
+        logger.warning("Log directory %s not found — tailer disabled", log_dir)
 
     app.state.pipeline = pipeline
     app.state.tailer = tailer
     app.state.geoip = geoip
     app.state.pipeline_running = True
 
-    logger.info("Vigilo started â€” pipeline active")
+    logger.info("Vigilo started — pipeline active")
 
     yield
 
@@ -161,7 +162,7 @@ def _load_inference_engine() -> InferenceEngine | None:
         from app.core.detection.inference import (
             InferenceEngine, )
     except ImportError:
-        logger.info("onnxruntime not installed â€” running in rules-only mode")
+        logger.info("onnxruntime not installed — running in rules-only mode")
         return None
 
     engine = InferenceEngine(model_dir=settings.model_dir)
@@ -173,7 +174,7 @@ def _load_inference_engine() -> InferenceEngine | None:
         return engine
 
     logger.info(
-        "No ML models found in %s â€” running in rules-only mode",
+        "No ML models found in %s — running in rules-only mode",
         settings.model_dir,
     )
     return None
@@ -187,6 +188,18 @@ def create_app() -> FastAPI:
         title=settings.app_name,
         version="0.1.0",
         lifespan=lifespan,
+    )
+
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=[
+            "https://vigilo-frontend.onrender.com",
+            "http://localhost:46969",
+            "http://localhost:5173",
+        ],
+        allow_credentials=True,
+        allow_methods=["*"],
+        allow_headers=["*"],
     )
 
     app.state.startup_time = time.monotonic()
@@ -207,3 +220,4 @@ def create_app() -> FastAPI:
     app.include_router(ws_router)
 
     return app
+

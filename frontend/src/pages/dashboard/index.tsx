@@ -3,7 +3,6 @@ import {
   LuActivity,
   LuArrowUpRight,
   LuBot,
-  LuCircleCheck,
   LuClock3,
   LuDatabase,
   LuGauge,

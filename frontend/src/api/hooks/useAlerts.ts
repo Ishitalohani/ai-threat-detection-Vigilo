@@ -52,6 +52,13 @@ const useAlertStore = create<AlertState>()((set) => ({
 }))
 
 function getWsUrl(): string {
+  const apiUrl = import.meta.env.VITE_API_URL
+
+  if (apiUrl) {
+    const wsUrl = apiUrl.replace(/^http/, 'ws')
+    return `${wsUrl}${WS_ENDPOINTS.ALERTS}`
+  }
+
   const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
   return `${protocol}//${window.location.host}${WS_ENDPOINTS.ALERTS}`
 }

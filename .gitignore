@@ -1,4 +1,4 @@
-﻿# ©AngelaMos | 2026
+# �AngelaMos | 2026
 # .gitignore
 
 # dev docs
@@ -75,4 +75,4 @@ mlartifacts/
 frontend/.pnpm-store/
 
 # Backend generated ML models
-backend/data/models/
+

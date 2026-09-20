@@ -1,9 +1,10 @@
 """
 ©AngelaMos | 2026
+
 factory.py
 
 FastAPI application factory with async lifespan managing
-database, Redis, pipeline, and ML model initialization
+database, Redis, pipeline, and ML model initialization.
 
 lifespan creates the async SQLAlchemy engine and session
 factory, runs SQLModel.metadata.create_all, connects
@@ -14,23 +15,16 @@ with configured queue sizes and ensemble weights, starts
 the LogTailer if the nginx log directory exists, and
 stores all components on app.state. On shutdown it stops
 the tailer, pipeline, GeoIP, Redis, and disposes the DB
-engine. _load_inference_engine lazily imports onnxruntime
--backed InferenceEngine, returning None if the dependency
-is missing or no models exist. create_app assembles the
-FastAPI instance and mounts all six API routers (health,
-ingest, threats, stats, models, websocket)
+engine.
 
-Connects to:
-  config.py               - settings for all config values
-  core/ingestion/pipeline - Pipeline
-  core/ingestion/tailer   - LogTailer
-  core/detection/rules    - RuleEngine
-  core/detection/inference- InferenceEngine (optional)
-  core/alerts/dispatcher  - AlertDispatcher
-  core/enrichment/geoip   - GeoIPService
-  core/redis_manager      - redis_manager
-  api/                    - all route modules
-  models/                 - SQLModel registration
+_load_inference_engine lazily imports the ONNX-backed
+InferenceEngine, returning None if the dependency is
+missing or no models exist.
+
+create_app assembles the FastAPI instance, enables CORS,
+automatically feeds incoming application requests into the
+existing threat-detection pipeline, and mounts all API
+routers.
 """
 
 import asyncio
@@ -38,12 +32,17 @@ import logging
 import time
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
-from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
+from sqlalchemy.ext.asyncio import (
+    AsyncSession,
+    async_sessionmaker,
+    create_async_engine,
+)
 from sqlmodel import SQLModel
 
 from app.config import settings
@@ -70,9 +69,14 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     app.state.startup_time = time.monotonic()
     app.state.pipeline_running = False
 
-    print(f"DEBUG DB URL LENGTH: {len(settings.database_url)} | REPR LAST 15: {repr(settings.database_url[-15:])}")
+    print(
+        f"DEBUG DB URL LENGTH: {len(settings.database_url)} | "
+        f"REPR LAST 15: {repr(settings.database_url[-15:])}"
+    )
+
     engine = create_async_engine(settings.database_url)
     app.state.db_engine = engine
+
     app.state.session_factory = async_sessionmaker(
         engine,
         class_=AsyncSession,
@@ -81,6 +85,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 
     async with engine.begin() as conn:
         await conn.run_sync(SQLModel.metadata.create_all)
+
     logger.info("Database tables verified")
 
     await redis_manager.connect()
@@ -96,8 +101,15 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     )
 
     inference_engine = _load_inference_engine()
-    app.state.models_loaded = inference_engine is not None and inference_engine.is_loaded
-    app.state.detection_mode = "hybrid" if app.state.models_loaded else "rules"
+
+    app.state.models_loaded = (
+        inference_engine is not None
+        and inference_engine.is_loaded
+    )
+
+    app.state.detection_mode = (
+        "hybrid" if app.state.models_loaded else "rules"
+    )
 
     pipeline = Pipeline(
         redis_client=redis_client,
@@ -115,22 +127,30 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         feature_queue_size=settings.feature_queue_size,
         alert_queue_size=settings.alert_queue_size,
     )
+
     await pipeline.start()
 
     tailer = None
     log_dir = Path(settings.nginx_log_path).resolve().parent
+
     if log_dir.is_dir():
         loop = asyncio.get_running_loop()
+
         position_path = Path(settings.model_dir) / ".tailer_pos.json"
+
         tailer = LogTailer(
             settings.nginx_log_path,
             pipeline.raw_queue,
             loop,
             position_path=position_path,
         )
+
         tailer.start()
     else:
-        logger.warning("Log directory %s not found — tailer disabled", log_dir)
+        logger.warning(
+            "Log directory %s not found — tailer disabled",
+            log_dir,
+        )
 
     app.state.pipeline = pipeline
     app.state.tailer = tailer
@@ -142,8 +162,10 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     yield
 
     app.state.pipeline_running = False
+
     if tailer is not None:
         tailer.stop()
+
     await pipeline.stop()
     geoip.close()
     await redis_manager.disconnect()
@@ -152,20 +174,24 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     logger.info("Vigilo shut down cleanly")
 
 
-def _load_inference_engine() -> InferenceEngine | None:
+def _load_inference_engine() -> "InferenceEngine | None":
     """
     Attempt to load the ONNX inference engine from the
-    configured model directory, returning None if ML
-    dependencies are missing or no models are found
+    configured model directory.
+
+    Returns None if ML dependencies are missing or no valid
+    models are found.
     """
     try:
-        from app.core.detection.inference import (
-            InferenceEngine, )
+        from app.core.detection.inference import InferenceEngine
     except ImportError:
-        logger.info("onnxruntime not installed — running in rules-only mode")
+        logger.info(
+            "onnxruntime not installed — running in rules-only mode"
+        )
         return None
 
     engine = InferenceEngine(model_dir=settings.model_dir)
+
     if engine.is_loaded:
         logger.info(
             "ML models loaded from %s",
@@ -177,6 +203,7 @@ def _load_inference_engine() -> InferenceEngine | None:
         "No ML models found in %s — running in rules-only mode",
         settings.model_dir,
     )
+
     return None
 
 
@@ -202,6 +229,100 @@ def create_app() -> FastAPI:
         allow_headers=["*"],
     )
 
+    @app.middleware("http")
+    async def auto_ingest_requests(
+        request: Request,
+        call_next,
+    ):
+        """
+        Automatically convert incoming application requests
+        into Nginx-style log lines and feed them into the
+        existing Vigilo detection pipeline.
+        """
+        response = await call_next(request)
+
+        path = request.url.path
+
+        ignored_paths = {
+            "/health",
+            "/ready",
+            "/docs",
+            "/openapi.json",
+            "/threats",
+            "/stats",
+            "/models/status",
+        }
+
+        should_ingest = (
+            request.method != "OPTIONS"
+            and path not in ignored_paths
+            and not path.startswith("/ws/")
+            and not path.startswith("/ingest/")
+        )
+
+        if not should_ingest:
+            return response
+
+        pipeline = getattr(
+            request.app.state,
+            "pipeline",
+            None,
+        )
+
+        if pipeline is None:
+            return response
+
+        client_ip = request.headers.get(
+            "x-forwarded-for",
+            (
+                request.client.host
+                if request.client
+                else "127.0.0.1"
+            ),
+        ).split(",")[0].strip()
+
+        uri = str(request.url.path)
+
+        if request.url.query:
+            uri += f"?{request.url.query}"
+
+        referer = request.headers.get(
+            "referer",
+            "-",
+        )
+
+        user_agent = request.headers.get(
+            "user-agent",
+            "-",
+        )
+
+        log_line = (
+            f'{client_ip} - - '
+            f'[{datetime.now(timezone.utc).strftime("%d/%b/%Y:%H:%M:%S +0000")}] '
+            f'"{request.method} {uri} HTTP/1.1" '
+            f'{response.status_code} '
+            f'{response.headers.get("content-length", "0")} '
+            f'"{referer}" '
+            f'"{user_agent}"'
+        )
+
+        try:
+            pipeline.raw_queue.put_nowait(log_line)
+
+            logger.debug(
+                "Automatically ingested request: %s %s",
+                request.method,
+                uri,
+            )
+
+        except asyncio.QueueFull:
+            logger.warning(
+                "Threat-detection queue is full; "
+                "request was not automatically ingested"
+            )
+
+        return response
+
     app.state.startup_time = time.monotonic()
     app.state.pipeline_running = False
 
@@ -220,4 +341,3 @@ def create_app() -> FastAPI:
     app.include_router(ws_router)
 
     return app
-
